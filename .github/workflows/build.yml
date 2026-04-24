@@ -142,6 +142,7 @@ jobs:
           Copy-Item "third_party\WinDivert\x64\WinDivert.dll" "release\" -Force
           Copy-Item "third_party\WinDivert\x64\WinDivert.sys" "release\" -Force
           if (Test-Path "README.md") { Copy-Item "README.md" "release\" -Force }
+          if (Test-Path "run.bat")   { Copy-Item "run.bat"   "release\" -Force }
           Copy-Item $env:CER_PATH "release\TORE_TEKLONOJI_ARASTIRMA.cer" -Force
           Get-ChildItem "release"
 
@@ -162,3 +163,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dptk-windows-x64.zip
+
