@@ -45,13 +45,38 @@ jobs:
           Write-Host "Downloading WinDivert from $url"
           Invoke-WebRequest -Uri $url -OutFile "WinDivert.zip" -UseBasicParsing
           Expand-Archive -Path "WinDivert.zip" -DestinationPath "wd_extracted" -Force
-          $root = Get-ChildItem -Path "wd_extracted" -Directory | Select-Object -First 1
+
+          Write-Host "==== Extracted layout ===="
+          Get-ChildItem -Recurse "wd_extracted" | Select-Object FullName
+
+          # Locate files regardless of inner folder name (x64, x86_64, amd64, etc.)
+          $header = Get-ChildItem -Path "wd_extracted" -Filter "windivert.h" -Recurse | Select-Object -First 1
+          $lib    = Get-ChildItem -Path "wd_extracted" -Filter "WinDivert.lib" -Recurse |
+                    Where-Object { $_.FullName -notmatch "x86\\" -and $_.FullName -notmatch "WinDivert32" } |
+                    Select-Object -First 1
+          $dll    = Get-ChildItem -Path "wd_extracted" -Filter "WinDivert.dll" -Recurse |
+                    Where-Object { $_.FullName -notmatch "x86\\" -and $_.FullName -notmatch "WinDivert32" } |
+                    Select-Object -First 1
+          $sys    = Get-ChildItem -Path "wd_extracted" -Filter "WinDivert64.sys" -Recurse | Select-Object -First 1
+          if (-not $sys) {
+            $sys  = Get-ChildItem -Path "wd_extracted" -Filter "WinDivert.sys" -Recurse |
+                    Where-Object { $_.FullName -notmatch "x86\\" } |
+                    Select-Object -First 1
+          }
+
+          if (-not $header) { throw "windivert.h not found in WinDivert archive" }
+          if (-not $lib)    { throw "WinDivert.lib (x64) not found in WinDivert archive" }
+          if (-not $dll)    { throw "WinDivert.dll (x64) not found in WinDivert archive" }
+          if (-not $sys)    { throw "WinDivert64.sys not found in WinDivert archive" }
+
           New-Item -ItemType Directory -Force -Path "third_party\WinDivert\include" | Out-Null
           New-Item -ItemType Directory -Force -Path "third_party\WinDivert\x64"     | Out-Null
-          Copy-Item "$($root.FullName)\include\windivert.h"   "third_party\WinDivert\include\" -Force
-          Copy-Item "$($root.FullName)\x86_64\WinDivert.lib"  "third_party\WinDivert\x64\"     -Force
-          Copy-Item "$($root.FullName)\x86_64\WinDivert.dll"  "third_party\WinDivert\x64\"     -Force
-          Copy-Item "$($root.FullName)\x86_64\WinDivert64.sys" "third_party\WinDivert\x64\WinDivert.sys" -Force
+          Copy-Item $header.FullName "third_party\WinDivert\include\windivert.h" -Force
+          Copy-Item $lib.FullName    "third_party\WinDivert\x64\WinDivert.lib"   -Force
+          Copy-Item $dll.FullName    "third_party\WinDivert\x64\WinDivert.dll"   -Force
+          Copy-Item $sys.FullName    "third_party\WinDivert\x64\WinDivert.sys"   -Force
+
+          Write-Host "==== Final third_party layout ===="
           Get-ChildItem -Recurse "third_party\WinDivert"
 
       - name: Configure (CMake)
