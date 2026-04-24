@@ -1,0 +1,135 @@
+name: Build DPTK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    env:
+      WINDIVERT_VERSION: "2.2.2"
+      PUBLISHER_NAME: "TORE TEKLONOJİ & ARAŞTIRMA"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Find and extract source zip
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem -Path . -Filter "DPTK.zip" -Recurse | Select-Object -First 1
+          if (-not $zip) {
+            Write-Host "DPTK.zip not found in repo root - assuming source files are already in place."
+          } else {
+            Write-Host "Extracting $($zip.FullName) ..."
+            New-Item -ItemType Directory -Force -Path "_src" | Out-Null
+            Expand-Archive -Path $zip.FullName -DestinationPath "_src" -Force
+            # Copy contents over the working tree (overwrites if needed)
+            Copy-Item -Path "_src\*" -Destination "." -Recurse -Force
+            Remove-Item -Recurse -Force "_src"
+          }
+          Get-ChildItem -Force
+
+      - name: Download WinDivert
+        shell: pwsh
+        run: |
+          $url = "https://github.com/basil00/WinDivert/releases/download/v$env:WINDIVERT_VERSION/WinDivert-$env:WINDIVERT_VERSION-A.zip"
+          Write-Host "Downloading WinDivert from $url"
+          Invoke-WebRequest -Uri $url -OutFile "WinDivert.zip" -UseBasicParsing
+          Expand-Archive -Path "WinDivert.zip" -DestinationPath "wd_extracted" -Force
+          $root = Get-ChildItem -Path "wd_extracted" -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path "third_party\WinDivert\include" | Out-Null
+          New-Item -ItemType Directory -Force -Path "third_party\WinDivert\x64"     | Out-Null
+          Copy-Item "$($root.FullName)\include\windivert.h"   "third_party\WinDivert\include\" -Force
+          Copy-Item "$($root.FullName)\x86_64\WinDivert.lib"  "third_party\WinDivert\x64\"     -Force
+          Copy-Item "$($root.FullName)\x86_64\WinDivert.dll"  "third_party\WinDivert\x64\"     -Force
+          Copy-Item "$($root.FullName)\x86_64\WinDivert64.sys" "third_party\WinDivert\x64\WinDivert.sys" -Force
+          Get-ChildItem -Recurse "third_party\WinDivert"
+
+      - name: Configure (CMake)
+        shell: pwsh
+        run: cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (Release)
+        shell: pwsh
+        run: cmake --build build --config Release --parallel
+
+      - name: Create self-signed code-signing certificate
+        shell: pwsh
+        run: |
+          $subject = "CN=$env:PUBLISHER_NAME, O=$env:PUBLISHER_NAME, C=TR"
+          Write-Host "Generating self-signed certificate for: $subject"
+          $cert = New-SelfSignedCertificate `
+            -Subject $subject `
+            -Type CodeSigningCert `
+            -KeyAlgorithm RSA `
+            -KeyLength 2048 `
+            -HashAlgorithm SHA256 `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -NotAfter (Get-Date).AddYears(5)
+          $pwd = ConvertTo-SecureString -String "build-pass" -Force -AsPlainText
+          $pfxPath = "$env:RUNNER_TEMP\codesign.pfx"
+          Export-PfxCertificate -Cert "Cert:\CurrentUser\My\$($cert.Thumbprint)" -FilePath $pfxPath -Password $pwd | Out-Null
+          # Also export the public .cer so users can import it into Trusted Root if they wish
+          Export-Certificate -Cert "Cert:\CurrentUser\My\$($cert.Thumbprint)" -FilePath "$env:RUNNER_TEMP\codesign.cer" | Out-Null
+          echo "PFX_PATH=$pfxPath" >> $env:GITHUB_ENV
+          echo "CER_PATH=$env:RUNNER_TEMP\codesign.cer" >> $env:GITHUB_ENV
+
+      - name: Sign dptk.exe with publisher name
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path "build" -Filter "dptk.exe" -Recurse | Select-Object -First 1
+          if (-not $exe) { throw "dptk.exe not found in build output" }
+          Write-Host "Signing $($exe.FullName)"
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" |
+                      Where-Object { $_.FullName -match "x64" } |
+                      Sort-Object FullName -Descending |
+                      Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found" }
+          & $signtool.FullName sign `
+            /f $env:PFX_PATH `
+            /p "build-pass" `
+            /fd SHA256 `
+            /tr "http://timestamp.digicert.com" `
+            /td SHA256 `
+            /d "DPTK" `
+            $exe.FullName
+          & $signtool.FullName verify /pa /v $exe.FullName
+
+      - name: Stage release files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "release" | Out-Null
+          $exe = Get-ChildItem -Path "build" -Filter "dptk.exe" -Recurse | Select-Object -First 1
+          Copy-Item $exe.FullName "release\" -Force
+          Copy-Item "third_party\WinDivert\x64\WinDivert.dll" "release\" -Force
+          Copy-Item "third_party\WinDivert\x64\WinDivert.sys" "release\" -Force
+          if (Test-Path "README.md") { Copy-Item "README.md" "release\" -Force }
+          Copy-Item $env:CER_PATH "release\TORE_TEKLONOJI_ARASTIRMA.cer" -Force
+          Get-ChildItem "release"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dptk-windows-x64
+          path: release/**
+          if-no-files-found: error
+
+      - name: Create GitHub Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "release\*" -DestinationPath "dptk-windows-x64.zip" -Force
+      - name: Publish release zip
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dptk-windows-x64.zip
