@@ -127,7 +127,11 @@ jobs:
             /td SHA256 `
             /d "DPTK" `
             $exe.FullName
-          & $signtool.FullName verify /pa /v $exe.FullName
+          if ($LASTEXITCODE -ne 0) { throw "signtool sign failed with exit code $LASTEXITCODE" }
+          Write-Host "Signature applied. Note: 'signtool verify' is intentionally skipped because"
+          Write-Host "self-signed certificates do not chain to a trusted root CA on the runner."
+          Write-Host "End users can import TORE_TEKLONOJI_ARASTIRMA.cer into 'Trusted Root Certification"
+          Write-Host "Authorities' to make Windows show the publisher as trusted."
 
       - name: Stage release files
         shell: pwsh
